@@ -37,6 +37,9 @@ TYPE(SURFACE_TYPE), POINTER :: SF=>NULL()
 TYPE(MATERIAL_TYPE), POINTER :: ML=>NULL()
 TYPE(REACTION_TYPE), POINTER :: RN=>NULL()
 LOGICAL :: RETURN_BEFORE_STOP_FILE=.FALSE., RETURN_BEFORE_SIM_MODE=.FALSE.
+! IBMB Parameter
+TYPE(COMPOUND_TYPE), POINTER :: CP=>NULL()
+INTEGER :: N_COMP_GLOBAL
 
 CONTAINS
 
@@ -109,6 +112,7 @@ CALL READ_PART    ; IF (STOP_STATUS==SETUP_STOP) RETURN
 CALL READ_CTRL    ; IF (STOP_STATUS==SETUP_STOP) RETURN
 CALL READ_MATL    ; IF (STOP_STATUS==SETUP_STOP) RETURN
 CALL READ_SURF    ; IF (STOP_STATUS==SETUP_STOP) RETURN
+CALL READ_COMP    ; IF (STOP_STATUS==SETUP_STOP) RETURN !IBMB function call
 CALL READ_CSVF    ; IF (STOP_STATUS==SETUP_STOP) RETURN
 CALL READ_OBST    ; IF (STOP_STATUS==SETUP_STOP) RETURN
 CALL READ_GEOM    ; IF (STOP_STATUS==SETUP_STOP) RETURN
@@ -1651,8 +1655,8 @@ END SUBROUTINE READ_TRAN
 
 SUBROUTINE READ_TIME(DT)
 
-REAL(EB) :: VEL_CHAR,DT
-NAMELIST /TIME/ DT,EVAC_DT_FLOWFIELD,EVAC_DT_STEADY_STATE,FYI,LIMITING_DT_RATIO,LOCK_TIME_STEP,RESTRICT_TIME_STEP, &
+REAL(EB) :: VEL_CHAR,DT, DT_IBMB !IBMB CODE: Add DT_IBMB TIMESTEP
+NAMELIST /TIME/ DT,DT_IBMB,EVAC_DT_FLOWFIELD,EVAC_DT_STEADY_STATE,FYI,LIMITING_DT_RATIO,LOCK_TIME_STEP,RESTRICT_TIME_STEP, &
                 T_BEGIN,T_END,T_END_GEOM,TIME_SHRINK_FACTOR,WALL_INCREMENT,WALL_INCREMENT_HT3D, &
                 TWFIN ! Backward compatibility
 
@@ -1663,6 +1667,7 @@ TIME_SHRINK_FACTOR   = 1._EB
 T_BEGIN              = 0._EB
 T_END                = 1._EB
 T_END_GEOM           = T_END
+DT_IBMB              = DT
 IF (ALL(EVACUATION_ONLY)) DT = EVAC_DT_STEADY_STATE
 
 REWIND(LU_INPUT) ; INPUT_FILE_LINE_NUMBER = 0
@@ -5917,6 +5922,7 @@ REAL(EB), DIMENSION(MAX_REACTIONS) :: A,E,HEATING_RATE,PYROLYSIS_RANGE,HEAT_OF_R
 REAL(EB) :: NU_SPEC(MAX_SPECIES,MAX_REACTIONS)
 LOGICAL, DIMENSION(MAX_REACTIONS) :: PCR
 LOGICAL :: ALLOW_SHRINKING, ALLOW_SWELLING,VEGETATION
+LOGICAL :: IBMB_MATL !IBMB PARAMETER
 CHARACTER(25) :: COLOR
 INTEGER :: RGB(3)
 CHARACTER(LABEL_LENGTH), DIMENSION(MAX_MATERIALS,MAX_REACTIONS) :: MATL_ID
@@ -6205,6 +6211,7 @@ SPEC_ID                = 'null'
 HEATING_RATE           = 5._EB       ! K/min
 PYROLYSIS_RANGE        = 80._EB      ! K or C
 VEGETATION             = .FALSE.
+IBMB_MATL              = .FALSE.     !IBMB parameter
 
 END SUBROUTINE SET_MATL_DEFAULTS
 
@@ -6318,6 +6325,8 @@ REAL(EB) :: VEGETATION_CDRAG,VEGETATION_CHAR_FRACTION,VEGETATION_ELEMENT_DENSITY
 LOGICAL :: VEGETATION,VEGETATION_NO_BURN,VEGETATION_LINEAR_DEGRAD,VEGETATION_ARRHENIUS_DEGRAD,VEG_LEVEL_SET_SPREAD,&
            DEFAULT,EVAC_DEFAULT,VEG_LSET_ELLIPSE,VEG_LSET_TAN2,TGA_ANALYSIS,COMPUTE_EMISSIVITY,COMPUTE_EMISSIVITY_BACK,&
            HT3D
+LOGICAL :: IBMB_SF,MFLUX,INNER_BC !IBMB Parameter
+REAL(EB) :: TEMPERATURE_BC,HEAT_FLUX_BC, THERM_CONTACT_R !IBMB Parameter
 
 NAMELIST /SURF/ ADIABATIC,AREA_ADJUST,AUTO_IGNITION_TEMPERATURE,&
                 BACKING,BURN_AWAY,CELL_SIZE_FACTOR,C_FORCED_CONSTANT,C_FORCED_PR_EXP,C_FORCED_RE,C_FORCED_RE_EXP,&
@@ -6343,7 +6352,8 @@ NAMELIST /SURF/ ADIABATIC,AREA_ADJUST,AUTO_IGNITION_TEMPERATURE,&
                 VEG_LSET_ROS_BACK,VEG_LSET_ROS_FLANK,VEG_LSET_ROS_HEAD,VEG_LSET_WIND_EXP,&
                 VEG_LSET_SIGMA,VEG_LSET_HT,VEG_LSET_BETA,VEG_LSET_ELLIPSE,VEG_LSET_TAN2,VEG_LSET_ELLIPSE_HEAD,&
                 VEL,VEL_BULK,VEL_GRAD,VEL_T,VOLUME_FLOW,WIDTH,XYZ,Z0,ZETA_FRONT,&
-                EXTERNAL_FLUX_RAMP,TAU_EXTERNAL_FLUX,VOLUME_FLUX ! Backwards compatability??
+                EXTERNAL_FLUX_RAMP,TAU_EXTERNAL_FLUX,VOLUME_FLUX,&
+                TEMPERATURE_BC,HEAT_FLUX_BC,THERM_CONTACT_R,IBMB_SF,MFLUX,INNER_BC ! IBMB Parameter
 
 ! Count the SURF lines in the input file
 
@@ -6669,6 +6679,8 @@ READ_SURF_LOOP: DO N=0,N_SURF
          SF%HEAT_TRANSFER_MODEL = H_YUAN
       CASE('FREE HORIZONTAL CYLINDER')
          SF%HEAT_TRANSFER_MODEL = H_FREE_HORIZONTAL_CYLINDER
+      !CASE('HOHM') !IBMB Wärmeübergang HOHM noch erforderlich?
+       !  SF%HEAT_TRANSFER_MODEL = H_HOHM
    END SELECT
    SF%HRRPUA               = 1000._EB*HRRPUA
    SF%MLRPUA               = MLRPUA
@@ -6773,6 +6785,14 @@ READ_SURF_LOOP: DO N=0,N_SURF
    SF%H_FIXED_B            = HEAT_TRANSFER_COEFFICIENT_BACK
    SF%HM_FIXED             = MASS_TRANSFER_COEFFICIENT
    SF%XYZ                  = XYZ
+   ! IBMB Parameter
+   SF%IBMB_SF              = IBMB_SF
+   SF%MFLUX                = MFLUX
+   SF%INNER_BC             = INNER_BC
+   SF%TEMPERATURE_BC       = TEMPERATURE_BC + TMPM
+   SF%HEAT_FLUX_BC         = HEAT_FLUX_BC
+   SF%THERM_CONTACT_R      = THERM_CONTACT_R
+   ! IBMB Parameter
 
    ! Convert inflowing MASS_FLUX_TOTAL to MASS_FLUX
 
@@ -7309,6 +7329,14 @@ VEG_LSET_HT                  = 0.0_EB
 VEG_LSET_BETA                = 0.0_EB
 VEG_LSET_SIGMA               = 0.0_EB
 VEG_LSET_QCON                = 0.0_EB
+!IBMB Parameter
+IBMB_SF                      = .FALSE.
+MFLUX                        = .FALSE.
+INNER_BC                     = .FALSE.
+TEMPERATURE_BC               = 999.9_EB - TMPM
+HEAT_FLUX_BC                 = 999.9_EB
+THERM_CONTACT_R              = 0.0_EB
+! IBMB Parameter
 
 END SUBROUTINE SET_SURF_DEFAULTS
 
@@ -7597,8 +7625,15 @@ PROCESS_SURF_LOOP: DO N=0,N_SURF
 
    IF (BLOWING .OR. SUCKING)        SF%SPECIES_BC_INDEX = SPECIFIED_MASS_FRACTION
    IF (ANY(SF%MASS_FRACTION>0._EB)) SF%SPECIES_BC_INDEX = SPECIFIED_MASS_FRACTION
-   IF (ANY(ABS(SF%MASS_FLUX)>TWO_EPSILON_EB) .OR. &
-       SF%PYROLYSIS_MODEL==PYROLYSIS_PREDICTED) SF%SPECIES_BC_INDEX = SPECIFIED_MASS_FLUX
+   !IF (ANY(ABS(SF%MASS_FLUX)>TWO_EPSILON_EB) .OR. &
+       !SF%PYROLYSIS_MODEL==PYROLYSIS_PREDICTED) SF%SPECIES_BC_INDEX = SPECIFIED_MASS_FLUX
+   
+    !IBMB code when MFLUX = TRUE SPECIFIED MASS_FLUX als SPECIESBC
+    IF (ANY(ABS(SF%MASS_FLUX)>TWO_EPSILON_EB) .OR. &
+       SF%PYROLYSIS_MODEL==PYROLYSIS_PREDICTED .OR. &
+       (SF%MFLUX ) ) SF%SPECIES_BC_INDEX = SPECIFIED_MASS_FLUX
+    
+    !IBMB code
 
    IF (SF%SPECIES_BC_INDEX==SPECIFIED_MASS_FRACTION) THEN
       IF (ALL(ABS(SF%MASS_FRACTION)< TWO_EPSILON_EB)) &
@@ -8495,6 +8530,146 @@ ENDDO READ_TABL_LOOP
 
 END SUBROUTINE READ_TABL
 
+!IBMB code
+!New Subroutine READ_COMP
+SUBROUTINE READ_COMP
+INTEGER :: N,J,N_COMP
+INTEGER :: MATL_NUM_0,K_CMP_MATL_ID
+CHARACTER(30), DIMENSION(MAX_MATERIALS) :: MATL_ID_0
+REAL(EB), DIMENSION(MAX_MATERIALS) :: MATL_MASS_FRAC_0
+CHARACTER(100) :: FYI
+
+NAMELIST /COMP/ ID,MATL_ID_0,MATL_MASS_FRAC_0
+
+
+!Count the COMP lines in the input file
+REWIND(LU_INPUT)
+N_COMP=0
+COUNT_COMP_LOOP: DO
+        CALL CHECKREAD('COMP',LU_INPUT,IOS)
+        IF (IOS==1) EXIT COUNT_COMP_LOOP
+        READ(LU_INPUT,COMP,ERR=34,IOSTAT=IOS)
+        N_COMP = N_COMP + 1
+34      IF(IOS>0) THEN
+                WRITE(MESSAGE,'(A,I3)') 'ERROR: Problem with COMP number', N_COMP+1
+                CALL SHUTDOWN(MESSAGE,PROCESS_0_ONLY=.FALSE.) ; RETURN
+        ENDIF
+ENDDO COUNT_COMP_LOOP
+REWIND(LU_INPUT)
+
+!Array allocation
+ALLOCATE(COMPOUND(0:N_COMP), STAT=IZERO)
+CALL ChkMemErr('READ','COMPOUND',IZERO)
+
+! Define global var N_COMP_GLOBAL
+N_COMP_GLOBAL = N_COMP
+
+!Read the COMP lines
+READ_COMP_LOOP: DO N=1,N_COMP
+    !Set starting conditions and pointer
+    CP => COMPOUND(N)
+    
+    MATL_ID_0(:) = 'null'
+    MATL_MASS_FRAC_0 (:) = 0.0_EB
+    FYI = 'null'
+    
+    !Allocate comp values
+    ALLOCATE(CP%MATL_INDEX(0:N_MATL))
+    ALLOCATE(CP%RHO_0(0:N_MATL))
+    ALLOCATE(CP%K_S(0:N_MATL))
+    ALLOCATE(CP%Y_S(0:N_MATL))
+    ALLOCATE(CP%X_S(0:N_MATL))
+    ALLOCATE(CP%MATL_ID(0:N_MATL))
+    
+    CALL CHECKREAD('COMP',LU_INPUT,IOS)
+    
+    READ(LU_INPUT,COMP,END=1337,IOSTAT=IOS)
+1337 IF(IOS>0) THEN
+         WRITE(MESSAGE,'(A,I3)') 'ERROR: Problem with COMP number', N
+         CALL SHUTDOWN(MESSAGE,PROCESS_0_ONLY=.FALSE.) ; RETURN
+     ENDIF
+    
+     IF (N==N_COMP) REWIND(LU_INPUT)
+     
+     !Check mass fraction
+     IF ( ABS(SUM(MATL_MASS_FRAC_0(:))-1.0_EB) > TWO_EPSILON_EB ) THEN
+         WRITE(MESSAGE,'(A,I3)') 'ERROR: Sum of MATL_MASS_FRAC_0 /= 1 in COMP number', N
+         CALL SHUTDOWN(MESSAGE,PROCESS_0_ONLY=.FALSE.) ; RETURN
+     ENDIF
+     
+     ! Count materials and check if MATL_ID and MATL_MASS_FRAC are in compliance
+     MATL_NUM_0 = 0
+     COUNT_MATL_LOOP: DO J=1,MAX_MATERIALS
+         IF ((MATL_ID_0(J) /= 'null') .and. (MATL_MASS_FRAC_0(J) /= 0.0_EB)) THEN
+             MATL_NUM_0 = MATL_NUM_0 + 1
+         ELSEIF ((MATL_ID_0(J) /= 'null') .and. (MATL_MASS_FRAC_0(J) == 0.0_EB)) THEN !Materials produced by pyrolysis
+             MATL_NUM_0 = MATL_NUM_0 +1
+         ELSEIF ((MATL_ID_0(J) == 'null') .and. (MATL_MASS_FRAC_0(J) /= 0.0_EB)) THEN
+             WRITE(MESSAGE, '(A,E8.1,A,I3)') &
+                 'ERROR: MATL_MASS_FRAC ',MATL_MASS_FRAC_0(J), ' defined without definition of MATL_ID in COMP number', N
+             CALL SHUTDOWN(MESSAGE,PROCESS_0_ONLY=.FALSE.) ; RETURN
+         ELSEIF ((MATL_ID_0(J) == 'null') .and. (MATL_MASS_FRAC_0(J) == 0.0_EB)) THEN !no entry skip loop
+             CYCLE COUNT_MATL_LOOP
+         ENDIF
+     ENDDO COUNT_MATL_LOOP
+     
+     ! Determine MATL_ID in &COMP and safe them
+     K = 1
+     K_CMP_MATL_ID = 1
+     MATL_ID_LOOP: DO J=1, N_MATL*MATL_NUM_0
+       !Max. possible and required iterationens (if material is located at the end of N_MATL)
+       ! Count iteration variable always from 1-N_MATL, because needed value Matl_ID_0 can be safed at the end of MATL_NAME
+       ! Sorting of &COMP in input files matters!!!!!!!!!
+        IF (MOD(J,N_MATL) == 0) THEN
+            K = N_MATL
+        ELSE 
+            K = MOD(J,N_MATL)
+        ENDIF
+        
+        IF (MATL_NAME(K) == MATL_ID_0(K_CMP_MATL_ID)) THEN
+            !Set right index to the material in &comp from materials list
+            CP%MATL_INDEX(K_CMP_MATL_ID) = K
+            
+            ! Set pointer at the found material
+            ML => MATERIAL(K)
+            
+            ! Set initial material density in component to ML%RHO_S
+            CP%RHO_0(K_CMP_MATL_ID) = ML%RHO_S
+            
+            ! Set K_S and C_S (if independent from temperature)
+            IF (ML%K_S > 0._EB) CP%K_S(K_CMP_MATL_ID) = ML%K_S
+            IF (ML%C_S > 0._EB) CP%C_S(K_CMP_MATL_ID) = ML%C_S
+            
+            ! Exit loop if all materials were found
+            IF (K_CMP_MATL_ID >= MATL_NUM_0) EXIT MATL_ID_LOOP
+            
+            K_CMP_MATL_ID = K_CMP_MATL_ID + 1
+     ENDIF
+ENDDO MATL_ID_LOOP
+
+!Write values in type instance
+CP%MATL_NUM = MATL_NUM_0
+CP%MATL_ID(1:MATL_NUM_0) = MATL_ID_0(1:MATL_NUM_0)
+CP%Y_S(1:MATL_NUM_0) = MATL_MASS_FRAC_0(1:MATL_NUM_0)
+
+! determine density fractions
+IF (CP%MATL_NUM == 1) THEN
+    CP%X_S = 0.0_EB
+    CP%X_S(CP%MATL_NUM) = 1.0_EB
+ELSE
+    ! calculate initial density fractions
+    CP%X_S(1:MATL_NUM_0) = (CP%Y_S(1:MATL_NUM_0) /CP%RHO_0(1:MATL_NUM_0)) / SUM(CP%Y_S(1:MATL_NUM_0)/CP%RHO_0(1:MATL_NUM_0))
+ENDIF
+
+     
+     
+ENDDO READ_COMP_LOOP
+
+
+
+
+END SUBROUTINE READ_COMP
+
 
 SUBROUTINE READ_OBST
 
@@ -8513,13 +8688,27 @@ REAL(EB) :: TRANSPARENCY,XB1,XB2,XB3,XB4,XB5,XB6,BULK_DENSITY,VOL_ADJUSTED,VOL_S
             INTERNAL_HEAT_SOURCE,HEIGHT,RADIUS,XYZ(3),ORIENTATION(3),AABB(6),ROTMAT(3,3),THETA,LENGTH,WIDTH,SHAPE_AREA(3)
 LOGICAL :: EMBEDDED,THICKEN,THICKEN_LOC,PERMIT_HOLE,ALLOW_VENT,EVACUATION,REMOVABLE,BNDF_FACE(-3:3),BNDF_OBST,OUTLINE,NOTERRAIN,&
            HT3D,WARN_HT3D,PYRO3D_RESIDUE
+           
+!IBMB parameter
+INTEGER, DIMENSION(1061208) :: COMP_ID = 0
+LOGICAL :: WARN_MSG_SENT = .FALSE.
+INTEGER :: NUM_XX,NUM_YY,NUM_ZZ
+LOGICAL :: IBMB_OB,WRITE_OUTPUT,WRITE_VIRT_RES,PLOT_SHRINK_SWELL
+INTEGER :: COUNT_X,COUNT_Y,COUNT_Z,COMP_ITER,MATL_ITER,READER
+REAL(EB) :: DT_OUTPUT,EPS_TOL,FLUX_LIMITER
+!IBMB parameter
+           
 NAMELIST /OBST/ ALLOW_VENT,BNDF_FACE,BNDF_OBST,BULK_DENSITY,&
                 COLOR,CTRL_ID,DEVC_ID,EVACUATION,FYI,HEIGHT,HT3D,ID,INTERNAL_HEAT_SOURCE,&
                 LENGTH,MATL_ID,MESH_ID,MULT_ID,NOTERRAIN,&
                 ORIENTATION,OUTLINE,OVERLAY,PERMIT_HOLE,PROP_ID,PYRO3D_IOR,PYRO3D_MASS_TRANSPORT,&
                 RADIUS,RAMP_Q,REMOVABLE,RGB,&
                 SHAPE,SURF_ID,SURF_ID6,SURF_IDS,TEXTURE_ORIGIN,THETA,THICKEN,&
-                TRANSPARENCY,WIDTH,XB,XYZ
+                TRANSPARENCY,WIDTH,XB,XYZ,&
+                !IBMB new parameter
+                IBMB_OB,NUM_XX,NUM_YY,NUM_ZZ,WRITE_OUTPUT,DT_OUTPUT,WRITE_VIRT_RES,&
+                EPS_TOL,COMP_ID,PLOT_SHRINK_SWELL,FLUX_LIMITER
+                !IBMB new parameter
 
 MESH_LOOP: DO NM=1,NMESHES
 
@@ -8653,6 +8842,18 @@ MESH_LOOP: DO NM=1,NMESHES
       IF (     EVACUATION_ONLY(NM)) REMOVABLE  = .FALSE.
       SHAPE_TYPE  = -1
       SHAPE_AREA  = 0._EB
+      
+      ! IBMB Parameter
+      IBMB_OB = .FALSE.
+      WRITE_VIRT_RES = .FALSE.
+      NUM_XX = -1
+      NUM_YY = -1
+      NUM_ZZ = -1
+      WRITE_OUTPUT = .FALSE.
+      DT_OUTPUT = 9999.9_EB
+      EPS_TOL = 0.001_EB
+      FLUX_LIMITER = 0.2_EB
+      ! IBMB Parameter
 
       ! Read the OBST line
 
@@ -9236,6 +9437,224 @@ MESH_LOOP: DO NM=1,NMESHES
                ! In Smokeview, draw the outline of the obstruction
 
                IF (OUTLINE) OB%TYPE_INDICATOR = 2
+               
+               !IBMB CODE
+               !Create, initialize and set variables/fields for calculation
+               OB%IBMB_OB = IBMB_OB
+               OB%NUM_XX = NUM_XX
+               OB%NUM_YY = NUM_YY
+               OB%NUM_ZZ = NUM_ZZ
+               
+               !Allocate memory if IBMB obstruction is found
+               IF (OB%IBMB_OB) THEN
+                    !check if output of virtual subcells is wanted
+                    OB%WRITE_VIRT_RES = WRITE_VIRT_RES
+                    
+                    OB%OB_NR = NN
+                    
+                    ALLOCATE(OB%IBMB_COMP(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    
+                    ALLOCATE(OB%TMP_ITERATE_2(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    ALLOCATE(OB%TMP_ITERATE(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    ALLOCATE(OB%TMP(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    ALLOCATE(OB%K_S(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    ALLOCATE(OB%RHO_IBMB(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    ALLOCATE(OB%C_S(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    ALLOCATE(OB%Q_S(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    
+                    ALLOCATE(OB%REACTION_RATE(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    ALLOCATE(OB%RHO_0(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    
+                    !Shrinking and swelling
+                    ALLOCATE(OB%REGRID_FACTOR(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    ALLOCATE(OB%REGRID_FACTOR_PROD(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    ALLOCATE(OB%DEL_X(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    ALLOCATE(OB%DEL_Y(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    ALLOCATE(OB%DEL_Z(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                    ALLOCATE(OB%SUBCELL_VOLUME(OB%NUM_XX+2,OB%NUM_YY+2,OB%NUM_ZZ+2))
+                 
+                    ! Solid phase density
+                    ! X,Y,Z,N_MATL
+                    ALLOCATE(OB%RHO_N(0:OB%NUM_XX+2,0:OB%NUM_YY+2,0:OB%NUM_ZZ+2,N_MATL))
+                    ALLOCATE(OB%RR(0:OB%NUM_XX+2,0:OB%NUM_YY+2,0:OB%NUM_ZZ+2,N_MATL))
+                 
+                    ! Solid phase fractions
+                    ! X,Y,Z,N_MATL
+                    ALLOCATE(OB%Y_S(0:OB%NUM_XX+2,0:OB%NUM_YY+2,0:OB%NUM_ZZ+2,N_MATL))
+                    ALLOCATE(OB%X_S(0:OB%NUM_XX+2,0:OB%NUM_YY+2,0:OB%NUM_ZZ+2,N_MATL))
+                 
+                    ! Mass of solid and gaseous components in solid phase pore system
+                    ALLOCATE(OB%MASS_SOLID(0:OB%NUM_XX+2,0:OB%NUM_YY+2,0:OB%NUM_ZZ+2))
+                    ALLOCATE(OB%MASSFLUX(0:OB%NUM_XX+2,0:OB%NUM_YY+2,0:OB%NUM_ZZ+2,N_TRACKED_SPECIES))
+                    
+                    ! Allocate fields for each material of the actual component
+                    !IF (NN <= 1) THEN ! Only needed if any of the OBST is an HC3D-OBST
+                     !  DO COMP_ITER=1,N_COMP_GLOBAL
+                       ! Allocate values
+                       ! N_TRACKED_SPECIES
+                       !ALLOCATE(COMPOUND(COMP_ITER)%Y_GS(N_TRACKED_SPECIES))
+                       
+                    !  ENDDO
+                    !ENDIF
+                    
+                    OB%TMP_ITERATE = TMPA
+                    OB%TMP = TMPA
+                    
+                    OB%RHO = 0.0_EB
+                    OB%C_S = 0.0_EB
+                    OB%Q_S = 0.0_EB
+                    OB%RHO_0 = 0._EB
+                    OB%K_S = 0.0_EB
+                    OB%REACTION_RATE = 0._EB
+                    OB%RHO_N = 0._EB
+                    OB%RR = 0._EB
+                    OB%MASS_SOLID = 0.0_EB
+                    OB%MASSFLUX = 0.0_EB
+                 
+                    ! Loop variable
+                    READER = 1
+                 
+                    ! Calculate DELTA_X, DELTA_Y, DELTA_Z
+                    OB%DELTA_X = (OB%X2 - OB%X1) / REAL(OB%NUM_XX,EB)
+                    OB%DELTA_Y = (OB%Y2 - OB%Y1) / REAL(OB%NUM_YY,EB)
+                    OB%DELTA_Z = (OB%Z2 - OB%Z1) / REAL(OB%NUM_ZZ,EB)
+                 
+                    ! Shrinking and Swelling
+                    OB%REGRID_FACTOR(:,:,:) = 1._EB
+                    OB%REGRID_FACTOR_PROD(:,:,:) = 1._EB
+                 
+                    ! For initial time step, no shrinking/swelling occured
+                    OB%DEL_X(:,:,:) = OB%DELTA_X
+                    OB%DEL_Y(:,:,:) = OB%DELTA_Y
+                    OB%DEL_Z(:,:,:) = OB%DELTA_Z
+                 
+                    ! Number of mesh/wall cells in the Obstruction -> nearest integer 
+                    OB%NUM_OB_XX = NINT( ABS(OB%X1 - OB%X2)/DX(II) )
+                    OB%NUM_OB_YY = NINT( ABS(OB%Y1 - OB%Y2)/DY(JJ) )
+                    OB%NUM_OB_ZZ = NINT( ABS(OB%Z1 - OB%Z2)/DZ(KK) )
+                 
+                    ! Catch plane layers
+                    IF (OB%NUM_OB_XX < 1) OB%NUM_OB_XX = 1
+                    IF (OB%NUM_OB_YY < 1) OB%NUM_OB_YY = 1 
+                    IF (OB%NUM_OB_ZZ < 1) OB%NUM_OB_ZZ = 1 
+                 
+                    ! Relation of Subcells per mesh/wall cell
+                    OB%SUBCELL_TO_MESHCELL_XX =  REAL(OB%NUM_XX,EB) / REAL(OB%NUM_OB_XX,EB)
+                    OB%SUBCELL_TO_MESHCELL_YY =  REAL(OB%NUM_YY,EB) / REAL(OB%NUM_OB_YY,EB)
+                    OB%SUBCELL_TO_MESHCELL_ZZ =  REAL(OB%NUM_ZZ,EB) / REAL(OB%NUM_OB_ZZ,EB)
+                 
+                 
+                    ! Catch non-fitting mesh-submesh-situations
+                    IF ( MODULO(OB%NUM_XX,OB%NUM_OB_XX)>TWO_EPSILON_EB ) THEN  
+                    WRITE(MESSAGE,'(A,A,I5,A,I5,A)')  'ERROR: Problem with OBST, OB%SUBCELL_TO_MESHCELL_XX not an Integer.',&
+                    ' NUM_XX: ',OB%NUM_XX,', OB%NUM_OB_XX: ',OB%NUM_OB_XX,'.'
+                    CALL SHUTDOWN(MESSAGE,PROCESS_0_ONLY=.FALSE.) ; RETURN
+                    ELSEIF ( MODULO(OB%NUM_YY,OB%NUM_OB_YY)>TWO_EPSILON_EB ) THEN  
+                    WRITE(MESSAGE,'(A,A,I5,A,I5,A)')  'ERROR: Problem with OBST, OB%SUBCELL_TO_MESHCELL_YY not an Integer.',&
+                    ' NUM_YY: ',OB%NUM_YY,', OB%NUM_OB_YY: ',OB%NUM_OB_YY,'.'
+                    CALL SHUTDOWN(MESSAGE,PROCESS_0_ONLY=.FALSE.) ; RETURN
+                    ELSEIF ( MODULO(OB%NUM_ZZ,OB%NUM_OB_ZZ)>TWO_EPSILON_EB ) THEN  
+                    WRITE(MESSAGE,'(A,A,I5,A,I5,A)')  'ERROR: Problem with OBST, OB%SUBCELL_TO_MESHCELL_ZZ not an Integer.',&
+                    ' NUM_ZZ: ',OB%NUM_ZZ,', OB%NUM_OB_ZZ: ',OB%NUM_OB_ZZ,'.'
+                    CALL SHUTDOWN(MESSAGE,PROCESS_0_ONLY=.FALSE.) ; RETURN
+                    ENDIF
+                 
+                    ! Allocate wall cell array of obst
+                    ALLOCATE(OB%IW_IBMB( (OB%NUM_XX * OB%NUM_YY * 2) + (OB%NUM_XX * OB%NUM_ZZ * 2) + (OB%NUM_YY * OB%NUM_ZZ * 2) ))
+                    ! Write tolerance
+                    OB%EPS_TOL = EPS_TOL
+                    OB%FLUX_LIMITER = FLUX_LIMITER + 1.0_EB
+                 
+                    OB%SUBCELL_VOLUME(:,:,:) = OB%DELTA_X * OB%DELTA_Y * OB%DELTA_Z
+                 
+                    DO COUNT_Z=2,OB%NUM_ZZ+1
+                        DO COUNT_Y=2,OB%NUM_YY+1
+                            DO COUNT_X=2,OB%NUM_XX+1
+                            ! Set allocated parameters with read values
+                    
+                            ! Info to user when LEN(COMP_ID) from input file is shorter than NUM_XX * NUM_YY * NUM_ZZ
+                            ! Missing COM_ID is considered with default value 1
+                            ! Might be desired but also an input error
+                            IF (COMP_ID(READER) <= 0) THEN
+                                COMP_ID(READER) = 1
+                                IF (.NOT. WARN_MSG_SENT) THEN
+                                    WRITE(*,'(/A/)') ' +++ IBMB READ() warning! +++'
+                                    WRITE(LU_OUTPUT,'(A)') ' Lenght of COMP_ID lower than NUM_XX * NUM_YY * NUM_ZZ.'
+                                    WRITE(LU_OUTPUT,'(A)') ' Missing values filled up with COMP_ID = 1.'
+                                    WRITE(*,'(A)') ''
+                                    WARN_MSG_SENT = .TRUE.
+                                ENDIF
+                            ENDIF
+                    
+                            OB%IBMB_COMP(COUNT_X,COUNT_Y,COUNT_Z) = COMP_ID(READER)
+                            READER = READER + 1
+                    
+                            ! Set initial conditions and define pointer
+                            CP => COMPOUND(OB%IBMB_COMP(COUNT_X,COUNT_Y,COUNT_Z))
+                    
+                            MATL_LOOP: DO MATL_ITER=1, CP%MATL_NUM
+                            ML  => MATERIAL(CP%MATL_INDEX(MATL_ITER))
+                            ! Set values (if independent from temperature)
+                            IF (ML%K_S > 0._EB) OB%K_S(COUNT_X,COUNT_Y,COUNT_Z) &
+                                = OB%K_S(COUNT_X,COUNT_Y,COUNT_Z) + ML%K_S * CP%Y_S(MATL_ITER)
+                        
+                            IF (ML%C_S > 0._EB) OB%C_S(COUNT_X,COUNT_Y,COUNT_Z) &
+                                = OB%C_S(COUNT_X,COUNT_Y,COUNT_Z) + ML%C_S * CP%Y_S(MATL_ITER)
+                        
+                            ! Set allocated parameters with read values
+                            ! (Density from material properties and reaction rate = 0.0)
+                            OB%Y_S(COUNT_X,COUNT_Y,COUNT_Z,MATL_ITER) = CP%Y_S(MATL_ITER)
+                            OB%X_S(COUNT_X,COUNT_Y,COUNT_Z,MATL_ITER) = CP%X_S(MATL_ITER)
+                            OB%RHO_N(COUNT_X,COUNT_Y,COUNT_Z,MATL_ITER) = ML%RHO_S*CP%X_S(MATL_ITER)
+                        
+                            ENDDO MATL_LOOP
+                            ! Set material averaged density as obstruction parameter
+                            OB%RHO_IBMB(COUNT_X,COUNT_Y,COUNT_Z) = SUM(OB%RHO_N(COUNT_X,COUNT_Y,COUNT_Z,:))
+                            OB%RHO_0(COUNT_X,COUNT_Y,COUNT_Z) = OB%RHO_IBMB(COUNT_X,COUNT_Y,COUNT_Z)
+                            OB%MASS_SOLID(COUNT_X,COUNT_Y,COUNT_Z) = OB%RHO_IBMB(COUNT_X,COUNT_Y,COUNT_Z) &
+                                                                   * OB%DELTA_X * OB%DELTA_Y * OB%DELTA_Z
+                    
+                            ENDDO
+                        ENDDO
+                    ENDDO
+                 
+                    ! Virtual cells get values from adjacent subcells
+                    OB%IBMB_COMP(1,:,:) =              OB%IBMB_COMP(2,:,:)
+                    OB%IBMB_COMP(:,1,:) =              OB%IBMB_COMP(:,2,:)
+                    OB%IBMB_COMP(:,:,1) =              OB%IBMB_COMP(:,:,2)
+                    OB%IBMB_COMP(OB%NUM_XX+2,:,:) = OB%IBMB_COMP(OB%NUM_XX+1,:,:)
+                    OB%IBMB_COMP(:,OB%NUM_YY+2,:) = OB%IBMB_COMP(:,OB%NUM_YY+1,:)
+                    OB%IBMB_COMP(:,:,OB%NUM_ZZ+2) = OB%IBMB_COMP(:,:,OB%NUM_ZZ+1)
+                 
+                    OB%RHO_IBMB(1,:,:) =              OB%RHO_IBMB(2,:,:)
+                    OB%RHO_IBMB(:,1,:) =              OB%RHO_IBMB(:,2,:)
+                    OB%RHO_IBMB(:,:,1) =              OB%RHO_IBMB(:,:,2)
+                    OB%RHO_IBMB(OB%NUM_XX+2,:,:) = OB%RHO_IBMB(OB%NUM_XX+1,:,:)
+                    OB%RHO_IBMB(:,OB%NUM_YY+2,:) = OB%RHO_IBMB(:,OB%NUM_YY+1,:)
+                    OB%RHO_IBMB(:,:,OB%NUM_ZZ+2) = OB%RHO_IBMB(:,:,OB%NUM_ZZ+1)
+                 
+                    OB%K_S(1,:,:) =              OB%K_S(2,:,:)
+                    OB%K_S(:,1,:) =              OB%K_S(:,2,:)
+                    OB%K_S(:,:,1) =              OB%K_S(:,:,2)
+                    OB%K_S(OB%NUM_XX+2,:,:) = OB%K_S(OB%NUM_XX+1,:,:)
+                    OB%K_S(:,OB%NUM_YY+2,:) = OB%K_S(:,OB%NUM_YY+1,:)
+                    OB%K_S(:,:,OB%NUM_ZZ+2) = OB%K_S(:,:,OB%NUM_ZZ+1)
+                 
+                    OB%C_S(1,:,:) =              OB%C_S(2,:,:)
+                    OB%C_S(:,1,:) =              OB%C_S(:,2,:)
+                    OB%C_S(:,:,1) =              OB%C_S(:,:,2)
+                    OB%C_S(OB%NUM_XX+2,:,:) = OB%C_S(OB%NUM_XX+1,:,:)
+                    OB%C_S(:,OB%NUM_YY+2,:) = OB%C_S(:,OB%NUM_YY+1,:)
+                    OB%C_S(:,:,OB%NUM_ZZ+2) = OB%C_S(:,:,OB%NUM_ZZ+1)
+                 
+                ENDIF
+                ! WRITE_OUTPUT parameter
+                OB%WRITE_OUTPUT  = WRITE_OUTPUT
+                OB%DT_OUTPUT  = DT_OUTPUT
+                OB%OUTPUT_CLOCK  = OB%DT_OUTPUT
+                OB%PLOT_SHRINK_SWELL = PLOT_SHRINK_SWELL
+                ! WRITE_OUTPUT parameter
+                ! IBMB code
 
             ENDDO I_MULT_LOOP
          ENDDO J_MULT_LOOP
